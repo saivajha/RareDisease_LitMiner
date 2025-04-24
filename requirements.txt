@@ -1,12 +1,4 @@
-Rare Disease Scientific Literature Mining App
-Here's a high-level visual architecture diagram representing Scientific Literature Mining using PubMed API, incorporating your goals of search, keyword highlighting, analytics, and export features, ideal for scientists and research consortia focused on rare diseases
-
-Key Capabilities
-Layer	Function, Frontend (UI), API Client Layer, Parser + NLP Engine, Analytics Module, Export Module, Cache Layer	
-
-Streamlined interface with search, filters, keyword highlights, export.
-Extracts structured info, highlights keyword, performs summarization.
-Secure, authenticated access to PubMed API using Entrez or E-Utilities.
-Generates frequency graphs, heatmaps, and keyword trends over time.
-Enables users to download article data with metadata and highlights.
-Speeds up repeat queries, stores filtered results for session use.
+streamlit
+pandas
+requests
+python-dotenv
