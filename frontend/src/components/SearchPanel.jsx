@@ -138,26 +138,60 @@ export default function SearchPanel() {
           <div className="success-box">
             Successfully indexed {result.indexed_count} article(s).
           </div>
-          <h3 className="section-title">Indexed Articles</h3>
-          <ul style={{ listStyle: 'none', padding: 0 }}>
-            {result.articles.map((art) => (
-              <li key={art.id} style={{
-                padding: '10px 0',
-                borderBottom: '1px solid #e2e8f0',
-                fontSize: '0.9rem'
-              }}>
-                <div style={{ fontWeight: 600, color: '#2b6cb0' }}>{art.title}</div>
-                <div style={{ color: '#718096', marginTop: 3, fontSize: '0.8rem' }}>
-                  PMID: {art.pmid}
-                  {art.journal && ` | ${art.journal}`}
-                  {art.pub_date && ` | ${art.pub_date}`}
-                  {art.full_text_available && (
-                    <span className="badge badge-green" style={{ marginLeft: 8 }}>Full Text</span>
-                  )}
-                </div>
-              </li>
-            ))}
-          </ul>
+
+          {result.summary && (
+            <div style={{ marginTop: '20px' }}>
+              <h3 className="section-title">Literature Summary</h3>
+              {result.summary.split(/\n{2,}/).filter(p => p.trim()).map((p, i) => (
+                <p key={i} style={{ marginBottom: '0.9em', lineHeight: '1.75', color: '#2d3748', fontSize: '0.95rem' }}>
+                  {p.trim()}
+                </p>
+              ))}
+            </div>
+          )}
+
+          <div style={{ marginTop: '24px' }}>
+            <h3 className="section-title" style={{ marginBottom: '12px' }}>References</h3>
+            <ol style={{ paddingLeft: '1.2em', margin: 0 }}>
+              {result.articles.map((art, i) => {
+                const authors = art.authors || []
+                const first = authors.length > 0 ? authors[0].split(',')[0] : 'Unknown'
+                const etAl = authors.length > 1 ? ' et al.' : ''
+                const year = art.pub_date ? art.pub_date.slice(0, 4) : 'n.d.'
+                return (
+                  <li key={art.id} style={{ marginBottom: '10px', fontSize: '0.875rem', color: '#4a5568', lineHeight: '1.6' }}>
+                    <span style={{ fontWeight: 500, color: '#2b6cb0' }}>{first}{etAl}</span>
+                    <span> ({year}). </span>
+                    <span style={{ fontStyle: 'italic' }}>{art.title}. </span>
+                    {art.journal && <span>{art.journal}. </span>}
+                    <span style={{ display: 'inline-flex', gap: '8px', flexWrap: 'wrap', marginTop: '2px' }}>
+                      {art.pmid && (
+                        <a href={`https://pubmed.ncbi.nlm.nih.gov/${art.pmid}`} target="_blank" rel="noreferrer"
+                          style={{ color: '#3182ce', fontSize: '0.8rem' }}>
+                          PMID: {art.pmid}
+                        </a>
+                      )}
+                      {art.doi && (
+                        <a href={`https://doi.org/${art.doi}`} target="_blank" rel="noreferrer"
+                          style={{ color: '#3182ce', fontSize: '0.8rem' }}>
+                          DOI: {art.doi}
+                        </a>
+                      )}
+                      {art.pmcid && (
+                        <a href={`https://www.ncbi.nlm.nih.gov/pmc/articles/${art.pmcid}`} target="_blank" rel="noreferrer"
+                          style={{ color: '#3182ce', fontSize: '0.8rem' }}>
+                          {art.pmcid}
+                        </a>
+                      )}
+                      {art.full_text_available && (
+                        <span className="badge badge-green">Full Text</span>
+                      )}
+                    </span>
+                  </li>
+                )
+              })}
+            </ol>
+          </div>
         </div>
       )}
     </div>

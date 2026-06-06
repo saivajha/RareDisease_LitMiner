@@ -5,6 +5,7 @@ from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
+from openai import OpenAI
 
 from app.database import get_db
 from app.models import Article, Chunk
@@ -13,6 +14,7 @@ from app.services import pubmed as pubmed_service
 from app.services import pmc as pmc_service
 from app.services import embeddings as embed_service
 from app.utils.chunking import chunk_abstract, chunk_fulltext
+from app.config import settings
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -142,4 +144,48 @@ async def search_and_index(request: SearchRequest, db: Session = Depends(get_db)
         db.refresh(a)
         result_articles.append(ArticleOut.model_validate(a))
 
-    return SearchResponse(indexed_count=len(result_articles), articles=result_articles)
+    # Generate a summary paragraph of the indexed articles
+    summary = None
+    if result_articles:
+        try:
+            summary = _generate_search_summary(request.keyword, result_articles)
+        except Exception as e:
+            logger.warning(f"Summary generation failed: {e}")
+
+    return SearchResponse(indexed_count=len(result_articles), summary=summary, articles=result_articles)
+
+
+def _generate_search_summary(keyword: str, articles: List[ArticleOut]) -> str:
+    """Generate a concise summary paragraph of the indexed articles using OpenAI."""
+    lines = []
+    for i, a in enumerate(articles[:15]):  # cap at 15 to stay within token limits
+        authors = a.authors or []
+        first_author = authors[0].split(",")[0] if authors else "Unknown"
+        et_al = " et al." if len(authors) > 1 else ""
+        year = str(a.pub_date)[:4] if a.pub_date else "n.d."
+        abstract_snippet = (a.abstract or "")[:300].rstrip()
+        lines.append(
+            f"[{i+1}] {first_author}{et_al} ({year}). {a.title}. {a.journal or ''}.\n"
+            f"Abstract: {abstract_snippet}..."
+        )
+
+    context = "\n\n".join(lines)
+    prompt = (
+        f"You have just retrieved {len(articles)} research articles from PubMed about: \"{keyword}\".\n\n"
+        f"Write a concise 2–3 paragraph synthesis of what these articles collectively cover. "
+        f"Write in flowing prose like a literature review introduction. "
+        f"Use inline citations in the format [1], [2], etc. matching the reference numbers. "
+        f"Highlight key themes, findings, or gaps across the articles.\n\n"
+        f"Articles:\n{context}"
+    )
+    client = OpenAI(api_key=settings.OPENAI_API_KEY)
+    response = client.chat.completions.create(
+        model=settings.OPENAI_MODEL_INGESTION,
+        messages=[
+            {"role": "system", "content": "You are a scientific literature analyst. Write concise, accurate synthesis paragraphs based only on the provided abstracts."},
+            {"role": "user", "content": prompt},
+        ],
+        temperature=0.2,
+        max_tokens=600,
+    )
+    return response.choices[0].message.content
