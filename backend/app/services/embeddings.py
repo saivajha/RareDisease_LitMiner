@@ -30,9 +30,28 @@ def get_chroma_client():
     if _chroma_client is None:
         if settings.CHROMADB_USE_HTTP:
             logger.info(f"Connecting to ChromaDB at {settings.CHROMADB_HOST}:{settings.CHROMADB_PORT}")
+            # Ensure default tenant/database exist (required by ChromaDB 0.5+)
+            try:
+                admin = chromadb.AdminClient(chromadb.config.Settings(
+                    chroma_server_host=settings.CHROMADB_HOST,
+                    chroma_server_http_port=int(settings.CHROMADB_PORT),
+                    chroma_server_ssl_enabled=False,
+                ))
+                try:
+                    admin.create_tenant(chromadb.DEFAULT_TENANT)
+                except Exception:
+                    pass
+                try:
+                    admin.create_database(chromadb.DEFAULT_DATABASE, tenant=chromadb.DEFAULT_TENANT)
+                except Exception:
+                    pass
+            except Exception as e:
+                logger.warning(f"Admin client setup warning (non-fatal): {e}")
             _chroma_client = chromadb.HttpClient(
                 host=settings.CHROMADB_HOST,
                 port=settings.CHROMADB_PORT,
+                tenant=chromadb.DEFAULT_TENANT,
+                database=chromadb.DEFAULT_DATABASE,
             )
         else:
             logger.info(f"Using persistent ChromaDB at {settings.CHROMADB_PERSIST_PATH}")
