@@ -1,12 +1,14 @@
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
 from app.database import engine, Base
 from app.routers import search, query, articles
+from app.routers import auth_router
+from app.auth import verify_token
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -48,9 +50,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(search.router, prefix="/api", tags=["search"])
-app.include_router(query.router, prefix="/api", tags=["query"])
-app.include_router(articles.router, prefix="/api", tags=["articles"])
+app.include_router(auth_router.router, tags=["auth"])
+app.include_router(search.router, prefix="/api", tags=["search"], dependencies=[Depends(verify_token)])
+app.include_router(query.router, prefix="/api", tags=["query"], dependencies=[Depends(verify_token)])
+app.include_router(articles.router, prefix="/api", tags=["articles"], dependencies=[Depends(verify_token)])
 
 
 @app.get("/health")

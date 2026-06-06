@@ -14,3 +14,4 @@ langchain-community==0.2.6
 langgraph==0.1.19
 python-dotenv==1.0.1
 python-multipart==0.0.9
+PyJWT==2.8.0

@@ -1,5 +1,10 @@
 const BASE_URL = '/api'
 
+function getAuthHeaders() {
+  const token = localStorage.getItem('auth_token')
+  return token ? { 'Authorization': `Bearer ${token}` } : {}
+}
+
 async function handleResponse(res) {
   if (!res.ok) {
     let msg = `HTTP error ${res.status}`
@@ -15,7 +20,7 @@ async function handleResponse(res) {
 export async function searchAndIndex(params) {
   const res = await fetch(`${BASE_URL}/search`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
     body: JSON.stringify(params),
   })
   return handleResponse(res)
@@ -24,7 +29,7 @@ export async function searchAndIndex(params) {
 export async function askQuestion(params) {
   const res = await fetch(`${BASE_URL}/query`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
     body: JSON.stringify(params),
   })
   return handleResponse(res)
@@ -39,6 +44,8 @@ export async function listArticles(params = {}) {
   if (params.page) query.set('page', params.page)
   if (params.limit) query.set('limit', params.limit)
 
-  const res = await fetch(`${BASE_URL}/articles?${query.toString()}`)
+  const res = await fetch(`${BASE_URL}/articles?${query.toString()}`, {
+    headers: { ...getAuthHeaders() },
+  })
   return handleResponse(res)
 }

@@ -14,6 +14,20 @@ class Settings(BaseSettings):
     OPENAI_MODEL_ANSWER: str = "gpt-4.1-mini"
     MAX_RESULTS_PER_SEARCH: int = 20
 
+    # Auth settings
+    GOOGLE_CLIENT_ID: str = ""
+    GOOGLE_CLIENT_SECRET: str = ""
+    GOOGLE_REDIRECT_URI: str = "http://localhost:8000/auth/callback"
+    FRONTEND_URL: str = "http://localhost:3000"
+    JWT_SECRET: str = "change-me-in-production"
+    JWT_EXPIRY_HOURS: int = 8
+    ALLOWED_DOMAINS: str = "neurocrine.com,soleno.life"
+
+    @property
+    def AUTH_DISABLED(self) -> bool:
+        """Disable auth in dev mode when Google credentials are not configured."""
+        return self.GOOGLE_CLIENT_ID == "" or self.JWT_SECRET == "dev"
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
