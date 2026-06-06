@@ -1,8 +1,7 @@
 import logging
-from typing import List, Dict, Any, Optional
-
-import anthropic
-
+from typing import List, Dict, Any, Optional, TypedDict
+from openai import OpenAI
+from langgraph.graph import StateGraph, END
 from app.config import settings
 from app.services.embeddings import search_similar
 
@@ -14,108 +13,96 @@ DISCLAIMER = (
     "for medical decisions."
 )
 
-SYSTEM_PROMPT = """You are a scientific literature assistant helping researchers explore rare disease literature.
-Based ONLY on the provided research excerpts below, answer the question concisely and accurately with citations.
+class RAGState(TypedDict):
+    question: str
+    filters: Optional[Dict[str, Any]]
+    chunks: List[Dict[str, Any]]
+    answer: str
+    sources: List[Dict[str, Any]]
 
-IMPORTANT RULES:
-1. Only use information from the provided excerpts - do not use prior knowledge.
-2. Cite sources using the format: [PMID: {pmid} | Title: {title} | DOI: {doi}]
-3. If the excerpts do not contain enough information, say so clearly.
-4. DISCLAIMER: This is for research support only and is not medical advice.
+def retrieve_node(state: RAGState) -> RAGState:
+    chunks = search_similar(
+        query=state["question"],
+        n_results=8,
+        filters=state.get("filters"),
+    )
+    return {**state, "chunks": chunks}
 
-Research Excerpts:
-{context}
-"""
-
-
-def _build_context(chunks: List[Dict[str, Any]]) -> str:
-    parts = []
-    for i, chunk in enumerate(chunks, 1):
-        meta = chunk.get("metadata", {})
-        pmid = meta.get("pmid", "N/A")
-        title = meta.get("title", "N/A")
-        doi = meta.get("doi", "N/A")
-        journal = meta.get("journal", "N/A")
-        authors = meta.get("authors", "")
-        pub_date = meta.get("pub_date", "N/A")
-        content = chunk.get("content", "")
-
-        header = f"[Excerpt {i}] PMID: {pmid} | Title: {title} | DOI: {doi} | Journal: {journal} | Date: {pub_date}"
-        parts.append(f"{header}\n{content}")
-
-    return "\n\n---\n\n".join(parts)
-
-
-def _extract_cited_sources(chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Deduplicate sources by PMID."""
-    seen = set()
-    sources = []
-    for chunk in chunks:
-        meta = chunk.get("metadata", {})
-        pmid = meta.get("pmid")
-        if pmid and pmid not in seen:
-            seen.add(pmid)
-            authors_raw = meta.get("authors", "")
-            if isinstance(authors_raw, str):
-                authors = [a.strip() for a in authors_raw.split(",") if a.strip()] if authors_raw else []
-            else:
-                authors = authors_raw or []
-            sources.append({
-                "pmid": pmid,
-                "pmcid": meta.get("pmcid"),
-                "doi": meta.get("doi"),
-                "title": meta.get("title", "N/A"),
-                "journal": meta.get("journal"),
-                "pub_date": meta.get("pub_date"),
-                "authors": authors,
-            })
-    return sources
-
-
-def retrieve_and_generate(
-    question: str,
-    filters: Optional[Dict[str, Any]] = None,
-    top_k: int = 8,
-) -> Dict[str, Any]:
-    """
-    RAG pipeline: retrieve relevant chunks then generate answer.
-    Returns { answer, disclaimer, sources }
-    """
-    # Retrieve
-    chunks = search_similar(question, n_results=top_k, filters=filters)
-
+def generate_node(state: RAGState) -> RAGState:
+    chunks = state["chunks"]
     if not chunks:
-        return {
-            "answer": "No relevant literature was found in the indexed database. Please search and index relevant articles first.",
-            "disclaimer": DISCLAIMER,
-            "sources": [],
-        }
+        return {**state, "answer": "No relevant literature found for this query. Please index relevant articles first using the Search & Index tab.", "sources": []}
 
-    # Build context
-    context = _build_context(chunks)
-    system = SYSTEM_PROMPT.replace("{context}", context)
-
-    # Generate with Claude
-    client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
-
-    try:
-        message = client.messages.create(
-            model="claude-opus-4-5",
-            max_tokens=1500,
-            system=system,
-            messages=[
-                {"role": "user", "content": question}
-            ],
+    context_parts = []
+    sources_map = {}
+    for i, chunk in enumerate(chunks):
+        meta = chunk["metadata"]
+        pmid = meta.get("pmid", "")
+        context_parts.append(
+            f"[{i+1}] PMID: {pmid} | Title: {meta.get('title', '')} | "
+            f"Journal: {meta.get('journal', '')} | Date: {meta.get('pub_date', '')}\n"
+            f"{chunk['content']}"
         )
-        answer = message.content[0].text
+        if pmid and pmid not in sources_map:
+            sources_map[pmid] = {
+                "pmid": pmid,
+                "pmcid": meta.get("pmcid", ""),
+                "doi": meta.get("doi", ""),
+                "title": meta.get("title", ""),
+                "journal": meta.get("journal", ""),
+                "pub_date": meta.get("pub_date", ""),
+                "authors": meta.get("authors", "").split(", ") if meta.get("authors") else [],
+            }
+
+    context = "\n\n---\n\n".join(context_parts)
+    system_prompt = (
+        "You are a scientific literature assistant specializing in rare disease research. "
+        "Answer the question based ONLY on the provided research excerpts. "
+        "Cite sources using [PMID: X | Title: Y | DOI: Z] format after each relevant statement. "
+        "Be concise and precise. If the excerpts don't contain enough information, say so clearly.\n\n"
+        f"DISCLAIMER: {DISCLAIMER}"
+    )
+
+    client = OpenAI(api_key=settings.OPENAI_API_KEY)
+    try:
+        response = client.chat.completions.create(
+            model=settings.OPENAI_MODEL_ANSWER,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": f"Research excerpts:\n{context}\n\nQuestion: {state['question']}"},
+            ],
+            temperature=0.1,
+            max_tokens=1500,
+        )
+        answer = response.choices[0].message.content
     except Exception as e:
-        logger.error(f"Claude API error: {e}")
-        answer = f"Error generating answer: {str(e)}"
+        logger.error(f"OpenAI generation failed: {e}")
+        answer = f"Error generating answer: {e}"
 
-    sources = _extract_cited_sources(chunks)
+    return {**state, "answer": answer, "sources": list(sources_map.values())}
 
+def build_rag_graph():
+    graph = StateGraph(RAGState)
+    graph.add_node("retrieve", retrieve_node)
+    graph.add_node("generate", generate_node)
+    graph.set_entry_point("retrieve")
+    graph.add_edge("retrieve", "generate")
+    graph.add_edge("generate", END)
+    return graph.compile()
+
+_rag_app = None
+
+def get_rag_app():
+    global _rag_app
+    if _rag_app is None:
+        _rag_app = build_rag_graph()
+    return _rag_app
+
+def run_rag(question: str, filters: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    app = get_rag_app()
+    result = app.invoke({"question": question, "filters": filters, "chunks": [], "answer": "", "sources": []})
     return {
-        "answer": answer,
+        "answer": result["answer"],
         "disclaimer": DISCLAIMER,
-        "sources": sources,
+        "sources": result["sources"],
     }

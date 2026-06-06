@@ -1,165 +1,112 @@
 import logging
+import uuid
 from typing import List, Dict, Any, Optional
-from functools import lru_cache
-
-import chromadb
-from chromadb.config import Settings as ChromaSettings
-from sentence_transformers import SentenceTransformer
-
+from openai import OpenAI
+from qdrant_client import QdrantClient
+from qdrant_client.models import (
+    Distance, VectorParams, PointStruct, Filter,
+    FieldCondition, MatchValue, Range
+)
 from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-_embedding_model: Optional[SentenceTransformer] = None
-_chroma_client = None
-_collection = None
+_openai_client: Optional[OpenAI] = None
+_qdrant_client: Optional[QdrantClient] = None
+VECTOR_SIZE = 1536  # text-embedding-3-small dimensions
 
-COLLECTION_NAME = "literature_chunks"
+def get_openai_client() -> OpenAI:
+    global _openai_client
+    if _openai_client is None:
+        _openai_client = OpenAI(api_key=settings.OPENAI_API_KEY)
+    return _openai_client
 
-
-def get_embedding_model() -> SentenceTransformer:
-    global _embedding_model
-    if _embedding_model is None:
-        logger.info(f"Loading embedding model: {settings.EMBEDDING_MODEL}")
-        _embedding_model = SentenceTransformer(settings.EMBEDDING_MODEL)
-    return _embedding_model
-
-
-def get_chroma_client():
-    global _chroma_client
-    if _chroma_client is None:
-        if settings.CHROMADB_USE_HTTP:
-            logger.info(f"Connecting to ChromaDB at {settings.CHROMADB_HOST}:{settings.CHROMADB_PORT}")
-            # Ensure default tenant/database exist (required by ChromaDB 0.5+)
-            try:
-                admin = chromadb.AdminClient(chromadb.config.Settings(
-                    chroma_server_host=settings.CHROMADB_HOST,
-                    chroma_server_http_port=int(settings.CHROMADB_PORT),
-                    chroma_server_ssl_enabled=False,
-                ))
-                try:
-                    admin.create_tenant(chromadb.DEFAULT_TENANT)
-                except Exception:
-                    pass
-                try:
-                    admin.create_database(chromadb.DEFAULT_DATABASE, tenant=chromadb.DEFAULT_TENANT)
-                except Exception:
-                    pass
-            except Exception as e:
-                logger.warning(f"Admin client setup warning (non-fatal): {e}")
-            _chroma_client = chromadb.HttpClient(
-                host=settings.CHROMADB_HOST,
-                port=settings.CHROMADB_PORT,
-                tenant=chromadb.DEFAULT_TENANT,
-                database=chromadb.DEFAULT_DATABASE,
+def get_qdrant_client() -> QdrantClient:
+    global _qdrant_client
+    if _qdrant_client is None:
+        _qdrant_client = QdrantClient(host=settings.QDRANT_HOST, port=settings.QDRANT_PORT)
+        # Ensure collection exists
+        existing = [c.name for c in _qdrant_client.get_collections().collections]
+        if settings.QDRANT_COLLECTION not in existing:
+            _qdrant_client.create_collection(
+                collection_name=settings.QDRANT_COLLECTION,
+                vectors_config=VectorParams(size=VECTOR_SIZE, distance=Distance.COSINE),
             )
-        else:
-            logger.info(f"Using persistent ChromaDB at {settings.CHROMADB_PERSIST_PATH}")
-            _chroma_client = chromadb.PersistentClient(path=settings.CHROMADB_PERSIST_PATH)
-    return _chroma_client
-
-
-def get_collection():
-    global _collection
-    if _collection is None:
-        client = get_chroma_client()
-        _collection = client.get_or_create_collection(
-            name=COLLECTION_NAME,
-            metadata={"hnsw:space": "cosine"},
-        )
-    return _collection
-
+            logger.info(f"Created Qdrant collection: {settings.QDRANT_COLLECTION}")
+    return _qdrant_client
 
 def embed_texts(texts: List[str]) -> List[List[float]]:
-    model = get_embedding_model()
-    embeddings = model.encode(texts, show_progress_bar=False)
-    return embeddings.tolist()
-
+    client = get_openai_client()
+    response = client.embeddings.create(
+        input=texts,
+        model=settings.OPENAI_EMBEDDING_MODEL,
+    )
+    return [item.embedding for item in response.data]
 
 def add_chunks(chunks_with_metadata: List[Dict[str, Any]]) -> None:
-    """
-    Add chunks to ChromaDB.
-    Each item: { id: str, content: str, metadata: dict }
-    """
     if not chunks_with_metadata:
         return
-
-    collection = get_collection()
-    ids = [c["id"] for c in chunks_with_metadata]
+    client = get_qdrant_client()
     texts = [c["content"] for c in chunks_with_metadata]
-    metadatas = [c["metadata"] for c in chunks_with_metadata]
-
     embeddings = embed_texts(texts)
-
-    # Upsert in batches
+    points = []
+    for chunk, embedding in zip(chunks_with_metadata, embeddings):
+        points.append(PointStruct(
+            id=str(uuid.uuid4()),
+            vector=embedding,
+            payload={
+                "chroma_id": chunk["id"],  # keep for compatibility
+                **chunk["metadata"],
+                "content": chunk["content"],
+            }
+        ))
     batch_size = 100
-    for i in range(0, len(ids), batch_size):
-        collection.upsert(
-            ids=ids[i:i + batch_size],
-            embeddings=embeddings[i:i + batch_size],
-            documents=texts[i:i + batch_size],
-            metadatas=metadatas[i:i + batch_size],
+    for i in range(0, len(points), batch_size):
+        client.upsert(
+            collection_name=settings.QDRANT_COLLECTION,
+            points=points[i:i+batch_size],
         )
-    logger.info(f"Added {len(ids)} chunks to ChromaDB")
-
+    logger.info(f"Added {len(points)} chunks to Qdrant")
 
 def search_similar(
     query: str,
     n_results: int = 8,
     filters: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
-    """
-    Search for similar chunks in ChromaDB.
-    Returns list of { content, metadata, distance }.
-    """
-    collection = get_collection()
+    client = get_qdrant_client()
     query_embedding = embed_texts([query])[0]
 
-    where = None
+    qdrant_filter = None
     if filters:
         conditions = []
         if filters.get("journal"):
-            conditions.append({"journal": {"$eq": filters["journal"]}})
-        if filters.get("date_from"):
-            conditions.append({"pub_date": {"$gte": filters["date_from"]}})
-        if filters.get("date_to"):
-            conditions.append({"pub_date": {"$lte": filters["date_to"]}})
+            conditions.append(FieldCondition(key="journal", match=MatchValue(value=filters["journal"])))
         if len(conditions) == 1:
-            where = conditions[0]
+            qdrant_filter = Filter(must=conditions)
         elif len(conditions) > 1:
-            where = {"$and": conditions}
+            qdrant_filter = Filter(must=conditions)
 
-    kwargs = {
-        "query_embeddings": [query_embedding],
-        "n_results": n_results,
-        "include": ["documents", "metadatas", "distances"],
-    }
-    if where:
-        kwargs["where"] = where
-
-    try:
-        results = collection.query(**kwargs)
-    except Exception as e:
-        logger.warning(f"ChromaDB query failed (possibly with filters): {e}")
-        # Retry without filters
-        kwargs.pop("where", None)
-        results = collection.query(**kwargs)
+    results = client.search(
+        collection_name=settings.QDRANT_COLLECTION,
+        query_vector=query_embedding,
+        limit=n_results,
+        query_filter=qdrant_filter,
+        with_payload=True,
+    )
 
     chunks = []
-    if results and results.get("documents"):
-        docs = results["documents"][0]
-        metas = results["metadatas"][0]
-        dists = results["distances"][0]
-        for doc, meta, dist in zip(docs, metas, dists):
-            chunks.append({"content": doc, "metadata": meta, "distance": dist})
-
+    for hit in results:
+        payload = hit.payload or {}
+        content = payload.pop("content", "")
+        chunks.append({"content": content, "metadata": payload, "distance": 1 - hit.score})
     return chunks
 
-
 def delete_chunks_by_article(pmid: str) -> None:
-    """Delete all chunks for a given PMID."""
-    collection = get_collection()
+    client = get_qdrant_client()
     try:
-        collection.delete(where={"pmid": {"$eq": pmid}})
+        client.delete(
+            collection_name=settings.QDRANT_COLLECTION,
+            points_selector=Filter(must=[FieldCondition(key="pmid", match=MatchValue(value=pmid))]),
+        )
     except Exception as e:
         logger.warning(f"Failed to delete chunks for pmid {pmid}: {e}")

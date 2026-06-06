@@ -1,7 +1,7 @@
 import logging
 from fastapi import APIRouter, HTTPException
 from app.schemas import QueryRequest, QueryResponse
-from app.services.rag import retrieve_and_generate
+from app.services.rag import run_rag
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -22,7 +22,7 @@ def ask_question(request: QueryRequest):
         }
 
     try:
-        result = retrieve_and_generate(question=request.question, filters=filters)
+        result = run_rag(question=request.question, filters=filters)
     except Exception as e:
         logger.error(f"RAG pipeline error: {e}")
         raise HTTPException(status_code=500, detail=f"Query failed: {str(e)}")

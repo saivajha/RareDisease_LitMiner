@@ -21,13 +21,13 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Could not create DB tables: {e}")
 
-    # Pre-load embedding model
+    # Initialize Qdrant collection
     try:
-        from app.services.embeddings import get_embedding_model
-        get_embedding_model()
-        logger.info("Embedding model loaded.")
+        from app.services.embeddings import get_qdrant_client
+        get_qdrant_client()
+        logger.info("Qdrant client initialized.")
     except Exception as e:
-        logger.warning(f"Could not pre-load embedding model: {e}")
+        logger.warning(f"Could not initialize Qdrant client: {e}")
 
     yield
     logger.info("Shutting down.")
