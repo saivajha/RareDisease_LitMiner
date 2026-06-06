@@ -28,6 +28,24 @@ def retrieve_node(state: RAGState) -> RAGState:
     )
     return {**state, "chunks": chunks}
 
+def _format_author_year(meta: dict) -> str:
+    """Format as 'Smith et al., 2024' or 'Smith & Jones, 2024'."""
+    authors_raw = meta.get("authors", "")
+    authors = authors_raw.split(", ") if authors_raw else []
+    pub_date = meta.get("pub_date", "")
+    year = pub_date[:4] if pub_date and len(pub_date) >= 4 else "n.d."
+    if not authors:
+        return year
+    first_last = authors[0].split(",")[0].strip() if "," in authors[0] else authors[0].split()[-1]
+    if len(authors) == 1:
+        return f"{first_last}, {year}"
+    elif len(authors) == 2:
+        second_last = authors[1].split(",")[0].strip() if "," in authors[1] else authors[1].split()[-1]
+        return f"{first_last} & {second_last}, {year}"
+    else:
+        return f"{first_last} et al., {year}"
+
+
 def generate_node(state: RAGState) -> RAGState:
     chunks = state["chunks"]
     if not chunks:
@@ -35,15 +53,14 @@ def generate_node(state: RAGState) -> RAGState:
 
     context_parts = []
     sources_map = {}
-    for i, chunk in enumerate(chunks):
+    ref_index = {}  # pmid -> reference number
+    ref_counter = 1
+
+    for chunk in chunks:
         meta = chunk["metadata"]
         pmid = meta.get("pmid", "")
-        context_parts.append(
-            f"[{i+1}] PMID: {pmid} | Title: {meta.get('title', '')} | "
-            f"Journal: {meta.get('journal', '')} | Date: {meta.get('pub_date', '')}\n"
-            f"{chunk['content']}"
-        )
         if pmid and pmid not in sources_map:
+            author_year = _format_author_year(meta)
             sources_map[pmid] = {
                 "pmid": pmid,
                 "pmcid": meta.get("pmcid", ""),
@@ -51,16 +68,38 @@ def generate_node(state: RAGState) -> RAGState:
                 "title": meta.get("title", ""),
                 "journal": meta.get("journal", ""),
                 "pub_date": meta.get("pub_date", ""),
-                "authors": meta.get("authors", "").split(", ") if meta.get("authors") else [],
+                "authors": authors_raw.split(", ") if (authors_raw := meta.get("authors", "")) else [],
+                "author_year": author_year,
+                "ref_num": ref_counter,
             }
+            ref_index[pmid] = ref_counter
+            ref_counter += 1
 
-    context = "\n\n---\n\n".join(context_parts)
+    for pmid, src in sources_map.items():
+        context_parts.append(
+            f"[{src['ref_num']}] {src['author_year']} — {src['title']}\n"
+            f"Journal: {src['journal']} | PMID: {pmid} | DOI: {src.get('doi', 'N/A')}\n"
+        )
+
+    # Add chunk content grouped by reference
+    chunk_parts = []
+    for chunk in chunks:
+        pmid = chunk["metadata"].get("pmid", "")
+        ref_num = ref_index.get(pmid, "?")
+        chunk_parts.append(f"[{ref_num}] {chunk['content']}")
+
+    context = "\n\n".join(chunk_parts)
+    references_list = "\n".join(context_parts)
+
     system_prompt = (
         "You are a scientific literature assistant specializing in rare disease research. "
-        "Answer the question based ONLY on the provided research excerpts. "
-        "Cite sources using [PMID: X | Title: Y | DOI: Z] format after each relevant statement. "
-        "Be concise and precise. If the excerpts don't contain enough information, say so clearly.\n\n"
-        f"DISCLAIMER: {DISCLAIMER}"
+        "Write your answer as flowing, readable prose — like a knowledgeable colleague explaining the topic. "
+        "Use natural language paragraphs, not bullet points. "
+        "Cite sources inline using author-year style, e.g. (Smith et al., 2024) or numbered style [1], "
+        "matching the reference numbers provided. Use citations naturally within sentences. "
+        "Only use information from the provided excerpts. "
+        "If the excerpts lack sufficient information, say so briefly and suggest searching for more specific articles.\n\n"
+        f"Available references:\n{references_list}"
     )
 
     client = OpenAI(api_key=settings.OPENAI_API_KEY)
