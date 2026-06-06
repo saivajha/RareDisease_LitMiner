@@ -42,6 +42,8 @@ class SearchRequest(BaseModel):
 
 class SearchResponse(BaseModel):
     indexed_count: int
+    new_count: int = 0
+    cached_count: int = 0
     summary: Optional[str] = None
     articles: List[ArticleOut]
 

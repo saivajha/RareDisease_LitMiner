@@ -38,3 +38,15 @@ class Chunk(Base):
     chroma_id = Column(String, nullable=True)
 
     article = relationship("Article", back_populates="chunks")
+
+
+class SearchCache(Base):
+    __tablename__ = "search_cache"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    cache_key = Column(String, unique=True, nullable=False, index=True)  # hash of keyword+filters
+    keyword = Column(String, nullable=False)
+    summary = Column(Text, nullable=True)
+    pmids = Column(JSON, default=list)  # list of PMIDs returned by this search
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

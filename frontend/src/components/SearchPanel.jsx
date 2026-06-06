@@ -136,7 +136,9 @@ export default function SearchPanel() {
       {result && (
         <div className="card">
           <div className="success-box">
-            Successfully indexed {result.indexed_count} article(s).
+            {result.indexed_count} article(s) loaded —{' '}
+            <strong>{result.new_count} new</strong> indexed,{' '}
+            <strong>{result.cached_count} already in database</strong> (no re-embedding).
           </div>
 
           {result.summary && (
