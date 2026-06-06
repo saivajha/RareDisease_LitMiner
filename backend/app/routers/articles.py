@@ -2,10 +2,10 @@ import logging
 from typing import Optional
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import or_
+from sqlalchemy import or_, func
 
 from app.database import get_db
-from app.models import Article
+from app.models import Article, Chunk, SearchCache
 from app.schemas import ArticleListResponse, ArticleOut
 
 router = APIRouter()
@@ -50,3 +50,24 @@ def list_articles(
         articles=[ArticleOut.model_validate(a) for a in articles],
         total=total,
     )
+
+
+@router.get("/stats")
+def get_stats(db: Session = Depends(get_db)):
+    """Return shared database statistics."""
+    article_count = db.query(func.count(Article.id)).scalar()
+    chunk_count = db.query(func.count(Chunk.id)).scalar()
+    cached_searches = db.query(func.count(SearchCache.id)).scalar()
+    journals = db.query(Article.journal).filter(Article.journal.isnot(None)).distinct().count()
+    recent = db.query(SearchCache).order_by(SearchCache.updated_at.desc()).limit(5).all()
+
+    return {
+        "total_articles": article_count,
+        "total_chunks_embedded": chunk_count,
+        "cached_searches": cached_searches,
+        "unique_journals": journals,
+        "recent_searches": [
+            {"keyword": s.keyword, "article_count": len(s.pmids or []), "updated_at": str(s.updated_at)}
+            for s in recent
+        ],
+    }
